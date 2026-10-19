@@ -1,0 +1,73 @@
+# HTTP Request Smuggling Educational Lab
+# ========================================
+#
+# Two independent environments:
+#   CL.TE → localhost:8080 (Frontend=CL, Backend=TE)
+#   TE.CL → localhost:8081 (Frontend=TE, Backend=CL)
+#
+# Start: docker compose up --build
+# Stop:  docker compose down
+#
+# ⚠ INTENTIONALLY VULNERABLE — localhost only!
+
+services:
+  # ─── CL.TE Environment ──────────────────────────────────────────────────
+
+  cl-te-frontend:
+    build:
+      context: ./cl-te
+    command: ["python", "-u", "frontend.py"]
+    environment:
+      - BACKEND_HOST=cl-te-backend
+      - BACKEND_PORT=9000
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - cl-te-backend
+    networks:
+      - cl-te-net
+    restart: unless-stopped
+
+  cl-te-backend:
+    build:
+      context: ./cl-te
+    command: ["python", "-u", "backend.py"]
+    # No host port mapping — only accessible from cl-te-net
+    networks:
+      - cl-te-net
+    restart: unless-stopped
+
+  # ─── TE.CL Environment ──────────────────────────────────────────────────
+
+  te-cl-frontend:
+    build:
+      context: ./te-cl
+    command: ["python", "-u", "frontend.py"]
+    environment:
+      - BACKEND_HOST=te-cl-backend
+      - BACKEND_PORT=9001
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      - te-cl-backend
+    networks:
+      - te-cl-net
+    restart: unless-stopped
+
+  te-cl-backend:
+    build:
+      context: ./te-cl
+    command: ["python", "-u", "backend.py"]
+    # No host port mapping — only accessible from te-cl-net
+    networks:
+      - te-cl-net
+    restart: unless-stopped
+
+# ─── Networks ────────────────────────────────────────────────────────────────
+# Separate networks ensure CL.TE and TE.CL environments are isolated.
+
+networks:
+  cl-te-net:
+    driver: bridge
+  te-cl-net:
+    driver: bridge

@@ -1,0 +1,964 @@
+# HTTP Request Smuggling Educational Lab
+
+## 1. Objective
+
+Build a completely local, Docker-based educational laboratory demonstrating the mechanics of:
+
+1. HTTP Request Smuggling — CL.TE
+2. HTTP Request Smuggling — TE.CL
+
+The lab must allow the user to send raw HTTP/1.1 requests through a deliberately vulnerable frontend proxy to a deliberately vulnerable backend server.
+
+The critical educational objective is to make the difference between frontend and backend HTTP request parsing visible.
+
+The implementation must NOT rely on production HTTP reverse proxies or frameworks whose normal behavior automatically rejects or normalizes ambiguous `Content-Length` + `Transfer-Encoding` requests.
+
+This is an intentionally vulnerable toy environment for localhost use only.
+
+---
+
+# 2. Required architecture
+
+Create two completely independent Docker Compose environments.
+
+## CL.TE
+
+Host:
+
+```text
+http://localhost:8080
+```
+
+Architecture:
+
+```text
+Client
+  |
+  | HTTP/1.1
+  v
+CL.TE Frontend :8080
+  |
+  | persistent TCP connection
+  v
+CL.TE Backend
+```
+
+The frontend must determine request boundaries using:
+
+```text
+Content-Length
+```
+
+The backend must determine request boundaries using:
+
+```text
+Transfer-Encoding: chunked
+```
+
+Therefore:
+
+```text
+Frontend = CL
+Backend  = TE
+```
+
+---
+
+## TE.CL
+
+Host:
+
+```text
+http://localhost:8081
+```
+
+Architecture:
+
+```text
+Client
+  |
+  | HTTP/1.1
+  v
+TE.CL Frontend :8081
+  |
+  | persistent TCP connection
+  v
+TE.CL Backend
+```
+
+The frontend must determine request boundaries using:
+
+```text
+Transfer-Encoding: chunked
+```
+
+The backend must determine request boundaries using:
+
+```text
+Content-Length
+```
+
+Therefore:
+
+```text
+Frontend = TE
+Backend  = CL
+```
+
+---
+
+# 3. Technology requirements
+
+Use:
+
+* Docker
+* Docker Compose
+* Python 3.12+
+* Python standard library wherever practical
+* Raw TCP sockets for the vulnerable HTTP parsing components
+
+Do NOT use:
+
+* Flask
+* FastAPI
+* Django
+* Express
+* Node HTTP server
+* Nginx
+* Apache
+* HAProxy
+
+for the core vulnerable parsing components.
+
+The reason is that normal HTTP implementations may reject or normalize malformed/ambiguous requests, defeating the purpose of the laboratory.
+
+The frontend and backend should use Python's:
+
+```python
+socket
+```
+
+module and explicitly implement the small subset of HTTP/1.1 parsing required by the lab.
+
+---
+
+# 4. Repository structure
+
+Create:
+
+```text
+http-request-smuggling-lab/
+│
+├── README.md
+├── docker-compose.yml
+├── .gitignore
+│
+├── cl-te/
+│   ├── Dockerfile
+│   ├── frontend.py
+│   ├── backend.py
+│   └── requirements.txt
+│
+├── te-cl/
+│   ├── Dockerfile
+│   ├── frontend.py
+│   ├── backend.py
+│   └── requirements.txt
+│
+├── tests/
+│   ├── test_cl_te.py
+│   └── test_te_cl.py
+│
+└── examples/
+    ├── cl-te-request.txt
+    └── te-cl-request.txt
+```
+
+If separate Dockerfiles are unnecessarily duplicated, they may share a base image, but keep the project easy for a student to understand.
+
+---
+
+# 5. Docker architecture
+
+Use one Docker Compose file.
+
+Expose:
+
+```text
+8080 → CL.TE frontend
+8081 → TE.CL frontend
+```
+
+Do NOT expose the backend ports to the host.
+
+For example:
+
+```text
+Host
+ │
+ ├── localhost:8080 → cl-te-frontend
+ │                         │
+ │                         └── cl-te-backend
+ │
+ └── localhost:8081 → te-cl-frontend
+                           │
+                           └── te-cl-backend
+```
+
+The backend should only be reachable from its Docker network.
+
+Both frontend/backend connections must use persistent TCP connections.
+
+---
+
+# 6. HTTP parser requirements
+
+The implementation must explicitly separate:
+
+## HTTP request headers
+
+Parse:
+
+```text
+METHOD SP PATH SP HTTP/VERSION
+```
+
+and headers.
+
+Header names should be treated case-insensitively.
+
+At minimum support:
+
+```text
+Host
+Content-Length
+Transfer-Encoding
+Connection
+Content-Type
+```
+
+Unknown headers should be preserved.
+
+Do not automatically normalize away duplicate or conflicting framing headers.
+
+---
+
+# 7. CL.TE frontend behavior
+
+The CL.TE frontend must:
+
+1. Accept a raw TCP connection from the client.
+2. Read the request headers.
+3. Parse `Content-Length`.
+4. Read exactly `Content-Length` bytes following the header terminator.
+5. Treat those bytes as the complete request body.
+6. Forward the resulting raw request bytes to the backend.
+7. Keep the backend TCP connection persistent.
+8. Continue parsing subsequent client requests on the same connection.
+
+The frontend should NOT use `Transfer-Encoding` to determine the body boundary.
+
+Conceptually:
+
+```python
+if content_length is present:
+    body = recv_exact(content_length)
+```
+
+Even if:
+
+```text
+Transfer-Encoding: chunked
+```
+
+is present.
+
+---
+
+# 8. CL.TE backend behavior
+
+The CL.TE backend must:
+
+1. Accept the persistent TCP connection from the frontend.
+2. Parse request headers.
+3. If:
+
+```text
+Transfer-Encoding: chunked
+```
+
+is present, ignore `Content-Length`.
+4. Parse the body using HTTP/1.1 chunked encoding.
+5. Stop at:
+
+```text
+0\r\n
+```
+
+followed by the terminating CRLF/trailers as appropriate.
+6. Immediately attempt to parse any remaining bytes in the TCP stream as the beginning of another HTTP request.
+
+This behavior intentionally creates the CL.TE desynchronization.
+
+---
+
+# 9. TE.CL frontend behavior
+
+The TE.CL frontend must:
+
+1. Accept raw TCP connections.
+2. Parse:
+
+```text
+Transfer-Encoding: chunked
+```
+
+3. Decode the chunked body.
+4. Forward the complete request downstream.
+5. Keep the backend TCP connection persistent.
+6. Ignore Content-Length when determining the frontend request boundary.
+
+Conceptually:
+
+```python
+if transfer_encoding == "chunked":
+    body = read_chunked_body()
+```
+
+---
+
+# 10. TE.CL backend behavior
+
+The TE.CL backend must:
+
+1. Parse request headers.
+2. Ignore `Transfer-Encoding` when determining request boundaries.
+3. Use:
+
+```text
+Content-Length
+```
+
+to determine the body length.
+4. Read exactly that number of bytes.
+5. Treat all remaining bytes in the TCP stream as the beginning of another request.
+
+This intentionally creates TE.CL desynchronization.
+
+---
+
+# 11. IMPORTANT: persistent connections
+
+This is mandatory.
+
+Do NOT create a new backend TCP connection for every request.
+
+The vulnerability depends on the frontend and backend disagreeing about where requests end on the same TCP byte stream.
+
+Therefore:
+
+```text
+Client
+   |
+   | Request A + Request B bytes
+   v
+Frontend
+   |
+   | same TCP stream
+   v
+Backend
+```
+
+The backend must be able to process:
+
+```text
+Request A
+Request B
+Request C
+...
+```
+
+from one persistent connection.
+
+---
+
+# 12. Backend request logging
+
+The backend must provide extremely verbose educational logging.
+
+For every parsed request print:
+
+```text
+============================================================
+BACKEND REQUEST
+============================================================
+
+Request number: 1
+
+Request line:
+POST / HTTP/1.1
+
+Headers:
+Host: localhost:8080
+Content-Length: ...
+Transfer-Encoding: ...
+
+Parser mode:
+TE
+
+Body length:
+0
+
+Body bytes:
+...
+
+Raw request bytes:
+...
+
+============================================================
+```
+
+For the second parsed request:
+
+```text
+Request number: 2
+
+Request line:
+GPOST / HTTP/1.1
+```
+
+etc.
+
+This is important because the lab is supposed to visually demonstrate request desynchronization.
+
+---
+
+# 13. Frontend logging
+
+The frontend should also log its interpretation.
+
+For example:
+
+```text
+============================================================
+FRONTEND REQUEST
+============================================================
+
+Parser mode: CL
+
+Request line:
+POST / HTTP/1.1
+
+Content-Length:
+6
+
+Frontend believes request length is:
+
+<calculated value>
+
+Bytes consumed:
+...
+
+Forwarding to backend...
+============================================================
+```
+
+For TE.CL:
+
+```text
+Parser mode: TE
+
+Transfer-Encoding:
+chunked
+
+Decoded body length:
+...
+
+Forwarding to backend...
+```
+
+The logs should make it possible to directly compare:
+
+```text
+Frontend interpretation
+        VS
+Backend interpretation
+```
+
+---
+
+# 14. Educational request endpoint
+
+Implement a very small backend application layer.
+
+Support:
+
+```text
+GET /
+GET /hello
+GET /admin
+POST /
+POST /echo
+```
+
+Responses should be simple.
+
+For example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 12
+
+Hello world!
+```
+
+For `/admin`:
+
+```text
+ADMIN AREA
+```
+
+The `/admin` endpoint should demonstrate a simple frontend/backend distinction later, but do not implement authentication bypasses initially.
+
+First focus entirely on request parsing.
+
+---
+
+# 15. Raw request visibility
+
+The backend should display:
+
+```text
+Raw bytes received
+```
+
+and:
+
+```text
+Bytes consumed by current parser
+```
+
+and:
+
+```text
+Remaining bytes in stream
+```
+
+where practical.
+
+Example:
+
+```text
+TCP STREAM
+
+POST / HTTP/1.1
+...
+0
+
+GPOST /admin HTTP/1.1
+...
+```
+
+Then:
+
+```text
+Frontend consumed:
+[bytes 0–N]
+
+Backend consumed:
+[bytes 0–M]
+
+Remaining:
+GPOST /admin ...
+```
+
+This is one of the most important features of the lab.
+
+---
+
+# 16. CL.TE demonstration
+
+Provide a working example in:
+
+```text
+examples/cl-te-request.txt
+```
+
+The example should demonstrate the basic PortSwigger-style CL.TE desynchronization.
+
+The expected educational result should be something recognizable, such as:
+
+```text
+Frontend sees:
+
+POST /
+
+Backend sees:
+
+POST /
+GPOST /
+```
+
+or an equivalent clearly identifiable second request.
+
+The exact payload must be generated/tested against the implementation rather than guessed.
+
+Write the exact working payload into the README after testing it.
+
+---
+
+# 17. TE.CL demonstration
+
+Provide:
+
+```text
+examples/te-cl-request.txt
+```
+
+Create a tested payload that causes:
+
+```text
+Frontend:
+Request A
+
+Backend:
+Request A
+Request B
+```
+
+Again, the exact payload must be tested against the implementation.
+
+Do not merely copy a payload from an article if it does not actually work against this implementation.
+
+---
+
+# 18. Burp Suite compatibility
+
+The lab must work with Burp Suite Repeater.
+
+The README should explain:
+
+```text
+Burp Repeater
+      ↓
+localhost:8080
+```
+
+for CL.TE and:
+
+```text
+Burp Repeater
+      ↓
+localhost:8081
+```
+
+for TE.CL.
+
+The frontend must therefore accept ordinary HTTP/1.1 requests over TCP.
+
+Do not require HTTP/2.
+
+---
+
+# 19. curl compatibility
+
+Provide equivalent examples using:
+
+```bash
+curl
+```
+
+where possible.
+
+However, because curl may normalize or alter certain HTTP headers, the README should clearly state when Burp Repeater or a raw TCP client is preferable.
+
+---
+
+# 20. Add a raw TCP testing client
+
+Create:
+
+```text
+tests/raw_client.py
+```
+
+or equivalent.
+
+It should allow sending an exact byte sequence without HTTP-library normalization.
+
+Example usage:
+
+```bash
+python tests/raw_client.py \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --file examples/cl-te-request.txt
+```
+
+The client must:
+
+1. Open a TCP socket.
+2. Send the exact file bytes.
+3. Keep the connection open long enough to receive responses.
+4. Print raw response bytes.
+5. Optionally print them in escaped/hex form for debugging.
+
+This gives us a deterministic way to test the lab independently of Burp.
+
+---
+
+# 21. Testing requirements
+
+Write automated tests for both labs.
+
+The tests must verify:
+
+## CL.TE
+
+The backend receives more than one logical request from a single client TCP stream when the intentionally crafted payload is sent.
+
+Verify through backend logs or a test endpoint.
+
+## TE.CL
+
+Likewise verify that a single client connection causes the backend to parse the smuggled bytes as another request.
+
+Tests should fail if:
+
+* frontend and backend use the same framing rules
+* backend connection is not persistent
+* the frontend consumes too many/few bytes
+* the backend does not attempt to parse remaining bytes
+* chunked parsing is incorrect
+
+---
+
+# 22. Safety constraints
+
+This project is an intentionally vulnerable local educational lab.
+
+Bind host ports only to:
+
+```text
+127.0.0.1
+```
+
+rather than:
+
+```text
+0.0.0.0
+```
+
+Do not expose the vulnerable services to the LAN or Internet.
+
+Do not include:
+
+* malware
+* credential theft
+* persistence
+* external target exploitation
+* automated scanning of arbitrary hosts
+
+The README should clearly state that the containers are intentionally vulnerable and should only be used locally.
+
+---
+
+# 23. README requirements
+
+The README should teach the user in this order:
+
+## Part 1 — HTTP request framing
+
+Explain:
+
+```text
+Content-Length
+Transfer-Encoding: chunked
+```
+
+and why HTTP request boundaries matter.
+
+## Part 2 — CL.TE
+
+Explain:
+
+```text
+Frontend → Content-Length
+Backend  → Transfer-Encoding
+```
+
+with a byte-level example.
+
+## Part 3 — TE.CL
+
+Explain:
+
+```text
+Frontend → Transfer-Encoding
+Backend  → Content-Length
+```
+
+with a byte-level example.
+
+## Part 4 — Running the lab
+
+```bash
+docker compose up --build
+```
+
+Then:
+
+```text
+CL.TE → http://127.0.0.1:8080
+TE.CL → http://127.0.0.1:8081
+```
+
+## Part 5 — Testing
+
+Show exact Burp Repeater instructions.
+
+## Part 6 — Raw TCP testing
+
+Show the testing client.
+
+## Part 7 — Reading the logs
+
+Explain exactly why the frontend and backend produce different interpretations.
+
+---
+
+# 24. Port summary
+
+Use exactly:
+
+```text
+CL.TE:
+127.0.0.1:8080
+
+TE.CL:
+127.0.0.1:8081
+```
+
+Do not expose backend ports.
+
+Docker internal ports can be:
+
+```text
+frontend → 8080
+backend  → 9000
+```
+
+for CL.TE and:
+
+```text
+frontend → 8081
+backend  → 9001
+```
+
+for TE.CL, although the internal values can be simplified if desired.
+
+---
+
+# 25. Implementation quality
+
+Keep the code intentionally simple and heavily commented.
+
+This is a cybersecurity university laboratory, not production software.
+
+Every important parser operation should explain:
+
+```text
+What bytes are being consumed?
+Why are they being consumed?
+Which HTTP rule is being followed?
+What does the other parser believe?
+```
+
+Avoid abstracting the parser behind large frameworks.
+
+A student should be able to open:
+
+```text
+frontend.py
+backend.py
+```
+
+and understand the complete CL.TE/TE.CL mechanism.
+
+---
+
+# 26. Required final demonstration
+
+After implementation, demonstrate the following.
+
+### CL.TE
+
+```text
+Client
+   ↓
+CL frontend
+   ↓
+TE backend
+
+Frontend log:
+"I consumed X bytes."
+
+Backend log:
+"I consumed Y bytes."
+
+Y != X
+
+Remaining bytes become another request.
+```
+
+### TE.CL
+
+```text
+Client
+   ↓
+TE frontend
+   ↓
+CL backend
+
+Frontend log:
+"I consumed X bytes."
+
+Backend log:
+"I consumed Y bytes."
+
+Y != X
+
+Remaining bytes become another request.
+```
+
+The final README should contain screenshots or representative terminal output showing both.
+
+---
+
+# 27. Definition of done
+
+The project is complete only when all of these are true:
+
+* [ ] `docker compose up --build` starts both labs.
+* [ ] `127.0.0.1:8080` exposes CL.TE.
+* [ ] `127.0.0.1:8081` exposes TE.CL.
+* [ ] Backends are not exposed to the host.
+* [ ] Connections between frontend and backend are persistent.
+* [ ] CL.TE frontend uses Content-Length.
+* [ ] CL.TE backend uses Transfer-Encoding.
+* [ ] TE.CL frontend uses Transfer-Encoding.
+* [ ] TE.CL backend uses Content-Length.
+* [ ] Backend logs every parsed request.
+* [ ] Frontend logs every parsing decision.
+* [ ] Raw request bytes are visible for debugging.
+* [ ] Working CL.TE payload has been tested.
+* [ ] Working TE.CL payload has been tested.
+* [ ] Burp Repeater can interact with both labs.
+* [ ] Raw TCP testing client works.
+* [ ] Automated tests pass.
+* [ ] README explains the byte-level mechanics.
+* [ ] Services are bound to localhost only.
+* [ ] No external network targets are required.
+
+Before declaring completion, actually run the containers and test the exploit payloads end-to-end. Do not claim a payload works merely because it resembles a known PortSwigger payload.
