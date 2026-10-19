@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}AI Chat — Indirect Prompt Injection Lab{% endblock %}
+
+{% block content %}
+<section class="page-section">
+    <h2>🤖 AI Chat</h2>
+    <p class="chat-explainer">
+        The AI model (<code>{{ model_name }}</code>) uses the current
+        <a href="/comments">comments</a> as context when answering your questions.
+        Try asking about the comments and observe how each mode responds.
+    </p>
+
+    <!-- Mode selector -->
+    <div class="mode-selector">
+        <label class="mode-option">
+            <input type="radio" name="mode" value="vulnerable" checked id="mode-vulnerable">
+            <span class="mode-label mode-vulnerable">
+                <span class="mode-icon">🔓</span>
+                <strong>Vulnerable</strong>
+                <small>Comments are mixed into the prompt without protection</small>
+            </span>
+        </label>
+        <label class="mode-option">
+            <input type="radio" name="mode" value="protected" id="mode-protected">
+            <span class="mode-label mode-protected">
+                <span class="mode-icon">🛡️</span>
+                <strong>Protected</strong>
+                <small>Comments are marked as untrusted data with defensive instructions</small>
+            </span>
+        </label>
+    </div>
+
+    <!-- Chat messages -->
+    <div class="chat-container" id="chat-container">
+        <div class="chat-messages" id="chat-messages">
+            <div class="chat-empty" id="chat-empty">
+                <p>No messages yet. Ask a question about the comments!</p>
+                <p class="suggestion">Try: <em>"Summarize all the comments"</em> or <em>"What do the reviews say?"</em></p>
+            </div>
+        </div>
+
+        <!-- Loading indicator -->
+        <div class="chat-loading" id="chat-loading" style="display:none;">
+            <div class="loading-dots">
+                <span></span><span></span><span></span>
+            </div>
+            <span>Thinking…</span>
+        </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="chat-input-area">
+        <form id="chat-form" class="chat-form">
+            <input
+                type="text"
+                id="chat-input"
+                placeholder="Ask a question about the comments…"
+                maxlength="1000"
+                autocomplete="off"
+                required
+            >
+            <button type="submit" class="btn btn-primary" id="send-btn">Send</button>
+        </form>
+        <button class="btn btn-secondary" id="clear-chat-btn" title="Clear chat history">🗑️ Clear</button>
+    </div>
+
+    <!-- Error display -->
+    <div class="chat-error" id="chat-error" style="display:none;"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const chatMessages = document.getElementById('chat-messages');
+    const chatEmpty = document.getElementById('chat-empty');
+    const chatLoading = document.getElementById('chat-loading');
+    const chatError = document.getElementById('chat-error');
+    const chatForm = document.getElementById('chat-form');
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('send-btn');
+    const clearBtn = document.getElementById('clear-chat-btn');
+
+    function getMode() {
+        const checked = document.querySelector('input[name="mode"]:checked');
+        return checked ? checked.value : 'vulnerable';
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function addMessage(role, text, extra) {
+        chatEmpty.style.display = 'none';
+        const msg = document.createElement('div');
+        msg.className = 'chat-msg chat-msg-' + role;
+
+        const label = document.createElement('div');
+        label.className = 'chat-msg-role';
+        label.textContent = role === 'user' ? '🧑 You' : '🤖 Assistant';
+        msg.appendChild(label);
+
+        const body = document.createElement('div');
+        body.className = 'chat-msg-body';
+        body.innerHTML = escapeHtml(text);
+        msg.appendChild(body);
+
+        // Add prompt inspection panel for assistant messages
+        if (role === 'assistant' && extra && extra.prompt_sent) {
+            const details = document.createElement('details');
+            details.className = 'prompt-details';
+            const summary = document.createElement('summary');
+            summary.textContent = '🔍 Inspect prompt sent to model (' + (extra.mode || 'unknown') + ' mode)';
+            details.appendChild(summary);
+            const pre = document.createElement('pre');
+            pre.className = 'prompt-pre';
+            pre.textContent = JSON.stringify(extra.prompt_sent, null, 2);
+            details.appendChild(pre);
+            msg.appendChild(details);
+        }
+
+        chatMessages.appendChild(msg);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function showError(message) {
+        chatError.textContent = message;
+        chatError.style.display = 'block';
+        setTimeout(() => { chatError.style.display = 'none'; }, 10000);
+    }
+
+    function setLoading(on) {
+        chatLoading.style.display = on ? 'flex' : 'none';
+        sendBtn.disabled = on;
+        chatInput.disabled = on;
+    }
+
+    chatForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const question = chatInput.value.trim();
+        if (!question) return;
+
+        chatError.style.display = 'none';
+        addMessage('user', question);
+        chatInput.value = '';
+        setLoading(true);
+
+        try {
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question: question, mode: getMode() }),
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                showError(data.error || 'Something went wrong.');
+                setLoading(false);
+                return;
+            }
+
+            addMessage('assistant', data.response, {
+                prompt_sent: data.prompt_sent,
+                mode: data.mode,
+            });
+        } catch (err) {
+            showError('Network error. Make sure the Flask server is running.');
+        }
+
+        setLoading(false);
+    });
+
+    clearBtn.addEventListener('click', async function () {
+        chatMessages.innerHTML = '';
+        chatMessages.appendChild(chatEmpty);
+        chatEmpty.style.display = 'block';
+        chatError.style.display = 'none';
+        try { await fetch('/api/chat/clear', { method: 'POST' }); } catch (_) {}
+    });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Indirect Prompt Injection Lab — A local educational tool demonstrating how untrusted data can influence LLM responses.">
+    <title>{% block title %}Indirect Prompt Injection Lab{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <div class="header-inner">
+            <h1 class="logo">
+                <span class="logo-icon">⚠</span> Indirect Prompt Injection Lab
+            </h1>
+            <nav>
+                <a href="/comments" class="nav-link {% if request.path == '/' or request.path == '/comments' %}active{% endif %}">
+                    💬 Comments
+                </a>
+                <a href="/chat" class="nav-link {% if request.path == '/chat' %}active{% endif %}">
+                    🤖 AI Chat
+                </a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="info-banner">
+            <strong>What is indirect prompt injection?</strong>
+            An attacker embeds malicious instructions inside untrusted data (like a comment).
+            When an LLM processes that data alongside legitimate queries, the hidden instructions
+            can hijack the model's response — even though the user never typed them.
+        </div>
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <p>🔒 This application is for <strong>local educational use only</strong>. Do not deploy to a public network.</p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

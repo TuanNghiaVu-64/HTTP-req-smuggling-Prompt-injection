@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Comments — Indirect Prompt Injection Lab{% endblock %}
+
+{% block content %}
+<section class="page-section">
+    <h2>📝 User Comments</h2>
+    <p class="untrusted-label">
+        ⚠️ Comments below are <strong>untrusted user-submitted content</strong>.
+        They are displayed with HTML escaping and may contain adversarial test payloads.
+    </p>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="alert alert-success">{{ success }}</div>
+    {% endif %}
+
+    <div class="comments-grid">
+        {% for comment in comments %}
+        <div class="comment-card {% if comment.tag == 'adversarial-test' %}adversarial{% endif %}">
+            {% if comment.tag == 'adversarial-test' %}
+            <span class="badge badge-adversarial">🧪 Adversarial Test Data</span>
+            {% endif %}
+            <div class="comment-author">{{ comment.author }}</div>
+            <div class="comment-text">{{ comment.text }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="form-card">
+        <h3>Add a Comment</h3>
+        <form action="/api/comments" method="POST" id="comment-form">
+            <div class="form-group">
+                <label for="author">Name (optional)</label>
+                <input type="text" id="author" name="author" placeholder="Anonymous" maxlength="100">
+            </div>
+            <div class="form-group">
+                <label for="text">Comment</label>
+                <textarea id="text" name="text" rows="4" placeholder="Write your comment here…" maxlength="2000" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary" id="submit-comment">Submit Comment</button>
+        </form>
+    </div>
+</section>
+{% endblock %}
